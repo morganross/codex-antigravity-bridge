@@ -1,6 +1,6 @@
 [Setup]
 AppName=Codex Antigravity Bridge
-AppVersion=1.7.0
+AppVersion=1.7.1
 DefaultDirName={pf}\Codex Antigravity Bridge
 DefaultGroupName=Codex Antigravity Bridge
 OutputDir=dist
@@ -9,6 +9,8 @@ Compression=lzma
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
 SetupIconFile=compiler:SetupClassicIcon.ico
+CloseApplications=no
+
 
 [Files]
 Source: "dist\codex-antigravity-bridge.exe"; DestDir: "{app}"; Flags: ignoreversion
