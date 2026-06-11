@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node antigravity-broker.js",
     "lint": "eslint .",
-    "build": "pkg . -t node18-win-x64 --out-path dist && C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /target:winexe /out:dist\\bridge-tray.exe src\\tray\\BridgeTray.cs"
+    "build": "node scripts/build.mjs"
   },
   "keywords": [
     "codex",
@@ -20,7 +20,7 @@
   "license": "MIT",
   "devDependencies": {
     "eslint": "^8.56.0",
-    "pkg": "^5.8.1",
+    "postject": "^1.0.0-alpha.6",
     "prettier": "^3.2.5"
   }
 }
