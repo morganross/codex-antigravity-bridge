@@ -88,9 +88,9 @@ function bootstrapEnvironment() {
     execSync('cam --version', { stdio: 'ignore' });
   } catch (e) {
     console.error(`[BOOTSTRAP] CAM CLI ('cam') not found in PATH.`);
-    console.log(`[BOOTSTRAP] Attempting to auto-install CAM via NPM...`);
+    console.log(`[BOOTSTRAP] Attempting to auto-install CAM from GitHub...`);
     try {
-      execSync('npm install -g codex-agent-manager', { stdio: 'inherit' });
+      execSync('npm install -g git+https://github.com/morganross/codex-agent-manager.git', { stdio: 'inherit' });
     } catch (installErr) {
       console.warn(`[BOOTSTRAP] WARNING: Failed to auto-install CAM. Please install it manually or ensure 'cam' is in your PATH.`);
     }
