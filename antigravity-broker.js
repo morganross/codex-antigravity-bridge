@@ -146,8 +146,30 @@ param (
     [string]$TargetAgent,
     [string]$MessageText
 )
-cd "$env:USERPROFILE\\OneDrive\\Documents\\New project\\codex-agent-manager"
-.\\cam.cmd send $TargetAgent $MessageText --from antigravity
+
+$tokenFile = "$env:USERPROFILE\\.codex-agent-manager\\secrets\\local-api-token"
+$configFile = "$env:USERPROFILE\\.codex-agent-manager\\config.json"
+
+if (-not (Test-Path $tokenFile)) {
+    Write-Error "CAM token file not found at $tokenFile"
+    exit 1
+}
+
+$token = (Get-Content $tokenFile -Raw).Trim()
+$port = 37631
+if (Test-Path $configFile) {
+    $config = Get-Content $configFile -Raw | ConvertFrom-Json
+    if ($config.port) { $port = $config.port }
+}
+
+$body = @{
+    targetAgent = $TargetAgent
+    message = $MessageText
+    sourceAgent = "antigravity"
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "http://127.0.0.1:$port/send" -Method Post -Headers @{ Authorization = "Bearer $token" } -Body $body -ContentType "application/json"
+$response | ConvertTo-Json -Depth 5
 `;
     fs.writeFileSync(destPs1, defaultPs1.trim(), "utf8");
   }
