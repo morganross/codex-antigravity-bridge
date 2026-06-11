@@ -190,6 +190,48 @@ $response | ConvertTo-Json -Depth 5
 
   fs.writeFileSync(path.join(camSkillDir, "skill.json"), JSON.stringify(skillDef, null, 2), "utf8");
   console.log(`[BOOTSTRAP] Skill 'cam_send_message' successfully installed at ${camSkillDir}`);
+
+  // Install Check Inbox Skill
+  const inboxSkillDir = path.join(skillsDir, "codex-cam-inbox");
+  if (!fs.existsSync(inboxSkillDir)) {
+    fs.mkdirSync(inboxSkillDir, { recursive: true });
+  }
+
+  const inboxPs1 = `
+$tokenFile = "$env:USERPROFILE\\.codex-agent-manager\\secrets\\local-api-token"
+$configFile = "$env:USERPROFILE\\.codex-agent-manager\\config.json"
+
+if (-not (Test-Path $tokenFile)) {
+    Write-Error "CAM token file not found at $tokenFile"
+    exit 1
+}
+
+$token = (Get-Content $tokenFile -Raw).Trim()
+$port = 37631
+if (Test-Path $configFile) {
+    $config = Get-Content $configFile -Raw | ConvertFrom-Json
+    if ($config.port) { $port = $config.port }
+}
+
+$response = Invoke-RestMethod -Uri "http://127.0.0.1:$port/inbox?agent=antigravity" -Method Get -Headers @{ Authorization = "Bearer $token" }
+$response | ConvertTo-Json -Depth 5
+`;
+  
+  fs.writeFileSync(path.join(inboxSkillDir, "Check-AgentMessages.ps1"), inboxPs1.trim(), "utf8");
+
+  const inboxSkillDef = {
+    name: "cam_check_inbox",
+    description: "Check your Codex Agent Manager (CAM) inbox for any pending messages from other agents.",
+    entrypoint: "pwsh.exe -File .\\Check-AgentMessages.ps1",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: []
+    }
+  };
+
+  fs.writeFileSync(path.join(inboxSkillDir, "skill.json"), JSON.stringify(inboxSkillDef, null, 2), "utf8");
+  console.log(`[BOOTSTRAP] Skill 'cam_check_inbox' successfully installed at ${inboxSkillDir}`);
 }
 
 // Helpers to get CAM config and token
