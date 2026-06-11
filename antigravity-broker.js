@@ -14,6 +14,7 @@ const BRAIN_DIR = path.join(os.homedir(), ".gemini", "antigravity", "brain");
 const AGENT_NAME = "antigravity";
 let lastProcessedMessageId = null;
 let isProcessing = false;
+let isChecking = false;
 
 // Auto-Discovery of AGY Path
 function resolveAgyPath() {
@@ -48,12 +49,7 @@ function bootstrapEnvironment() {
       throw new Error("Needs login");
     }
   } catch (e) {
-    console.log(`[BOOTSTRAP] Antigravity OAuth missing or expired. Prompting login...`);
-    try {
-      execSync('agy login', { stdio: 'inherit' });
-    } catch (loginErr) {
-      console.warn(`[BOOTSTRAP] WARNING: 'agy login' failed or was cancelled. Broker may fail to route messages.`);
-    }
+    console.warn(`[BOOTSTRAP] WARNING: Antigravity OAuth missing or expired. Run 'agy login' in a terminal or click 'Login' in the tray status window.`);
   }
 
   // 3. Verify Codex CLI
@@ -70,17 +66,14 @@ function bootstrapEnvironment() {
     console.log(`[BOOTSTRAP] Checking Codex OAuth...`);
     execSync('codex whoami', { stdio: 'ignore' });
   } catch (e) {
-    console.log(`[BOOTSTRAP] Codex OAuth missing or expired. Prompting login...`);
-    try {
-      execSync('codex login', { stdio: 'inherit' });
-    } catch (loginErr) {
-      console.warn(`[BOOTSTRAP] WARNING: 'codex login' failed. CAM integration may fail.`);
-    }
+    console.warn(`[BOOTSTRAP] WARNING: Codex OAuth missing or expired. Run 'codex login' in a terminal or click 'Login' in the tray status window.`);
   }
 
-  // 5. Inject CAM Skills for Antigravity
+  // 5. Inject CAM Skills for Antigravity and Codex
   console.log(`[BOOTSTRAP] Injecting CAM messaging skills into Antigravity global directory...`);
   installAntigravitySkills();
+  console.log(`[BOOTSTRAP] Injecting CAM messaging skills into Codex global directory...`);
+  installCodexSkills();
 
   // 6. Verify CAM CLI
   try {
@@ -92,13 +85,14 @@ function bootstrapEnvironment() {
     console.warn(`[BOOTSTRAP] The broker will continue polling, but injection may fail until CAM is installed.`);
   }
 
+  // Determine local development CAM path dynamically
+  const scriptDir = typeof __dirname !== 'undefined' ? __dirname : path.dirname(process.argv[1] || '.');
+  const devCamPath = path.resolve(scriptDir, "..", "codex-agent-manager", "cam.cmd");
+  const camCmd = fs.existsSync(devCamPath) ? `"${devCamPath}"` : 'cam';
+
   // 7. Auto-Register Antigravity Agent
   try {
     console.log(`[BOOTSTRAP] Registering Antigravity with CAM...`);
-    // Fallback logic for development environments where cam is not globally installed
-    const devCamPath = path.join(os.homedir(), "OneDrive", "Documents", "New project", "codex-agent-manager", "cam.cmd");
-    const camCmd = fs.existsSync(devCamPath) ? `"${devCamPath}"` : 'cam';
-    
     execSync(`${camCmd} agent create antigravity --cwd "${SCRATCH_DIR}" --thread-id antigravity-session-uuid`, { stdio: 'ignore' });
     console.log(`[BOOTSTRAP] Antigravity successfully registered with CAM.`);
   } catch (e) {
@@ -108,9 +102,6 @@ function bootstrapEnvironment() {
   // 8. Verify CAM Daemon Status
   try {
     console.log(`[BOOTSTRAP] Checking CAM Daemon status...`);
-    const devCamPath = path.join(os.homedir(), "OneDrive", "Documents", "New project", "codex-agent-manager", "cam.cmd");
-    const camCmd = fs.existsSync(devCamPath) ? `"${devCamPath}"` : 'cam';
-
     const camStatus = execSync(`${camCmd} daemon status`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     if (camStatus.toLowerCase().includes('stopped') || camStatus.toLowerCase().includes('not running')) {
       console.log(`[BOOTSTRAP] CAM Daemon is stopped. Attempting to start it...`);
@@ -194,6 +185,10 @@ $response | ConvertTo-Json -Depth 5
   }
 
   const inboxPs1 = `
+param (
+    [int]$WaitSeconds = 20
+)
+
 $tokenFile = "$env:USERPROFILE\\.codex-agent-manager\\secrets\\local-api-token"
 $configFile = "$env:USERPROFILE\\.codex-agent-manager\\config.json"
 
@@ -209,7 +204,12 @@ if (Test-Path $configFile) {
     if ($config.port) { $port = $config.port }
 }
 
-$response = Invoke-RestMethod -Uri "http://127.0.0.1:$port/inbox?agent=antigravity" -Method Get -Headers @{ Authorization = "Bearer $token" }
+$uri = "http://127.0.0.1:$port/inbox?agent=antigravity"
+if ($WaitSeconds -gt 0) {
+    $uri += "&wait=$WaitSeconds"
+}
+
+$response = Invoke-RestMethod -Uri $uri -Method Get -Headers @{ Authorization = "Bearer $token" }
 $response | ConvertTo-Json -Depth 5
 `;
   
@@ -217,17 +217,128 @@ $response | ConvertTo-Json -Depth 5
 
   const inboxSkillDef = {
     name: "cam_check_inbox",
-    description: "Check your Codex Agent Manager (CAM) inbox for any pending messages from other agents.",
-    entrypoint: "pwsh.exe -File .\\Check-AgentMessages.ps1",
+    description: "Check your Codex Agent Manager (CAM) inbox for any pending messages from other agents. Set WaitSeconds to block and wait for a response if none are currently available.",
+    entrypoint: "pwsh.exe -File .\\Check-AgentMessages.ps1 -WaitSeconds {{WaitSeconds}}",
     parameters: {
       type: "object",
-      properties: {},
+      properties: {
+        WaitSeconds: { type: "integer", description: "Optional. Number of seconds to block and wait for a message if the inbox is currently empty (up to 30). Defaults to 20." }
+      },
       required: []
     }
   };
 
   fs.writeFileSync(path.join(inboxSkillDir, "skill.json"), JSON.stringify(inboxSkillDef, null, 2), "utf8");
   console.log(`[BOOTSTRAP] Skill 'cam_check_inbox' successfully installed at ${inboxSkillDir}`);
+}
+
+function installCodexSkills() {
+  const skillsDir = path.join(os.homedir(), ".codex", "skills");
+  const camSkillDir = path.join(skillsDir, "codex-cam-messaging");
+  const scriptsDir = path.join(camSkillDir, "scripts");
+
+  if (!fs.existsSync(scriptsDir)) {
+    fs.mkdirSync(scriptsDir, { recursive: true });
+  }
+
+  const skillMd = `---
+name: codex-cam-messaging
+description: Send and receive messages to/from other agents using the Codex Agent Manager (CAM) protocol.
+---
+# Instructions
+
+You are connected to the Codex Agent Manager (CAM) messaging fabric. You can communicate with other agents (including \`antigravity\`) by running local scripts.
+
+## Sending a Message
+To send a message to another agent:
+1. Run the PowerShell script \`./scripts/Send-AgentMessage.ps1\` with the following parameters:
+   - \`-TargetAgent\`: The name of the agent you want to message (e.g., \`antigravity\`).
+   - \`-MessageText\`: The body of your message.
+   - \`-SourceAgent\`: Your agent name (e.g., \`coder-bot\`).
+
+**Example CLI call:**
+\`\`\`powershell
+pwsh -File "$env:USERPROFILE\\.codex\\skills\\codex-cam-messaging\\scripts\\Send-AgentMessage.ps1" -TargetAgent "antigravity" -MessageText "Hello" -SourceAgent "coder-bot"
+\`\`\`
+
+## Checking Your Inbox
+To check for incoming messages:
+1. Run the PowerShell script \`./scripts/Check-AgentMessages.ps1\` with the following parameters:
+   - \`-AgentName\`: Your agent name (e.g., \`coder-bot\`).
+   - \`-WaitSeconds\`: (Optional) The number of seconds to block and wait for a response if your inbox is currently empty (defaults to 20, up to 30).
+
+**Example CLI call:**
+\`\`\`powershell
+pwsh -File "$env:USERPROFILE\\.codex\\skills\\codex-cam-messaging\\scripts\\Check-AgentMessages.ps1" -AgentName "coder-bot" -WaitSeconds 15
+\`\`\`
+`;
+
+  const sendPs1 = `
+param (
+    [string]$TargetAgent,
+    [string]$MessageText,
+    [string]$SourceAgent
+)
+
+$tokenFile = "$env:USERPROFILE\\.codex-agent-manager\\secrets\\local-api-token"
+$configFile = "$env:USERPROFILE\\.codex-agent-manager\\config.json"
+
+if (-not (Test-Path $tokenFile)) {
+    Write-Error "CAM token file not found at $tokenFile"
+    exit 1
+}
+
+$token = (Get-Content $tokenFile -Raw).Trim()
+$port = 37631
+if (Test-Path $configFile) {
+    $config = Get-Content $configFile -Raw | ConvertFrom-Json
+    if ($config.port) { $port = $config.port }
+}
+
+$body = @{
+    targetAgent = $TargetAgent
+    message = $MessageText
+    sourceAgent = $SourceAgent
+} | ConvertTo-Json
+
+$response = Invoke-RestMethod -Uri "http://127.0.0.1:$port/send" -Method Post -Headers @{ Authorization = "Bearer $token" } -Body $body -ContentType "application/json"
+$response | ConvertTo-Json -Depth 5
+`;
+
+  const checkPs1 = `
+param (
+    [string]$AgentName,
+    [int]$WaitSeconds = 20
+)
+
+$tokenFile = "$env:USERPROFILE\\.codex-agent-manager\\secrets\\local-api-token"
+$configFile = "$env:USERPROFILE\\.codex-agent-manager\\config.json"
+
+if (-not (Test-Path $tokenFile)) {
+    Write-Error "CAM token file not found at $tokenFile"
+    exit 1
+}
+
+$token = (Get-Content $tokenFile -Raw).Trim()
+$port = 37631
+if (Test-Path $configFile) {
+    $config = Get-Content $configFile -Raw | ConvertFrom-Json
+    if ($config.port) { $port = $config.port }
+}
+
+$uri = "http://127.0.0.1:$port/inbox?agent=$AgentName"
+if ($WaitSeconds -gt 0) {
+    $uri += "&wait=$WaitSeconds"
+}
+
+$response = Invoke-RestMethod -Uri $uri -Method Get -Headers @{ Authorization = "Bearer $token" }
+$response | ConvertTo-Json -Depth 5
+`;
+
+  fs.writeFileSync(path.join(camSkillDir, "SKILL.md"), skillMd.trim(), "utf8");
+  fs.writeFileSync(path.join(scriptsDir, "Send-AgentMessage.ps1"), sendPs1.trim(), "utf8");
+  fs.writeFileSync(path.join(scriptsDir, "Check-AgentMessages.ps1"), checkPs1.trim(), "utf8");
+  console.log(`[BOOTSTRAP] Codex global CAM skills successfully installed/updated at ${camSkillDir}`);
 }
 
 // Helpers to get CAM config and token
@@ -253,17 +364,32 @@ function loadMappings() {
   try {
     if (!fs.existsSync(SCRATCH_DIR)) fs.mkdirSync(SCRATCH_DIR, { recursive: true });
     if (fs.existsSync(MAPPINGS_FILE)) {
-      return JSON.parse(fs.readFileSync(MAPPINGS_FILE, "utf8"));
+      const parsed = JSON.parse(fs.readFileSync(MAPPINGS_FILE, "utf8"));
+      if (parsed && typeof parsed === "object") {
+        if ("conversations" in parsed) {
+          return parsed;
+        } else {
+          // Backward compatibility conversion:
+          return {
+            conversations: parsed,
+            lastProcessedMessageId: null
+          };
+        }
+      }
     }
   } catch (e) {}
-  return {};
+  return { conversations: {}, lastProcessedMessageId: null };
 }
 
 function saveMappings(mappings) {
   try {
     if (!fs.existsSync(SCRATCH_DIR)) fs.mkdirSync(SCRATCH_DIR, { recursive: true });
-    fs.writeFileSync(MAPPINGS_FILE, JSON.stringify(mappings, null, 2), "utf8");
-  } catch (e) {}
+    const tmpFile = `${MAPPINGS_FILE}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmpFile, JSON.stringify(mappings, null, 2), "utf8");
+    fs.renameSync(tmpFile, MAPPINGS_FILE);
+  } catch (e) {
+    console.error("[BROKER] Error saving mappings:", e.message);
+  }
 }
 
 // Run language_server.exe
@@ -319,67 +445,69 @@ async function pollAgyTranscript(conversationId, startByte = 0) {
 
   return new Promise((resolve, reject) => {
     let watcher;
+    let fallbackInterval;
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      if (watcher) {
+        try { watcher.close(); } catch (e) {}
+      }
+      if (fallbackInterval) {
+        clearInterval(fallbackInterval);
+      }
+    };
+
     const timeout = setTimeout(() => {
-      if (watcher) watcher.close();
+      cleanup();
       reject(new Error("Timeout waiting for Antigravity response"));
     }, 120000); // 2 min timeout
 
-    if (fs.existsSync(logFile)) {
-      const currentSize = fs.statSync(logFile).size;
-      if (currentSize > startByte) {
-        const buffer = Buffer.alloc(currentSize - startByte);
-        const fd = fs.openSync(logFile, "r");
-        fs.readSync(fd, buffer, 0, buffer.length, startByte);
-        fs.closeSync(fd);
-        
-        startByte = currentSize; // update startByte
-        
-        const text = buffer.toString("utf8");
-        const lines = text.split(/\r?\n/).filter(Boolean);
-        for (const line of lines) {
-          try {
-            const step = JSON.parse(line);
-            if (step.source === "MODEL" && step.type === "PLANNER_RESPONSE" && step.status === "DONE") {
-              clearTimeout(timeout);
-              console.log(`[BROKER] Found Antigravity response: "${step.content}"`);
-              resolve(step.content);
-              return;
-            }
-          } catch (e) {}
+    const checkFile = () => {
+      if (!fs.existsSync(logFile)) return;
+      try {
+        const currentSize = fs.statSync(logFile).size;
+        if (currentSize > startByte) {
+          const buffer = Buffer.alloc(currentSize - startByte);
+          const fd = fs.openSync(logFile, "r");
+          fs.readSync(fd, buffer, 0, buffer.length, startByte);
+          fs.closeSync(fd);
+          
+          startByte = currentSize; // update startByte
+          
+          const text = buffer.toString("utf8");
+          const lines = text.split(/\r?\n/).filter(Boolean);
+          for (const line of lines) {
+            try {
+              const step = JSON.parse(line);
+              if (step.source === "MODEL" && step.type === "PLANNER_RESPONSE" && step.status === "DONE") {
+                cleanup();
+                console.log(`[BROKER] Found Antigravity response: "${step.content}"`);
+                resolve(step.content);
+                return;
+              }
+            } catch (e) {}
+          }
         }
+      } catch (e) {
+        // file might be locked temporarily or deleted
       }
+    };
+
+    // Initial check
+    checkFile();
+
+    // Setup fs.watch
+    try {
+      watcher = fs.watch(logDir, (eventType, filename) => {
+        if (filename !== "transcript.jsonl") return;
+        checkFile();
+      });
+    } catch (watchErr) {
+      console.warn(`[BROKER] Failed to initialize fs.watch: ${watchErr.message}. Falling back entirely to polling.`);
     }
 
-    watcher = fs.watch(logDir, (eventType, filename) => {
-      if (filename !== "transcript.jsonl") return;
-      if (!fs.existsSync(logFile)) return;
-
-      const currentSize = fs.statSync(logFile).size;
-      if (currentSize > startByte) {
-        const buffer = Buffer.alloc(currentSize - startByte);
-        const fd = fs.openSync(logFile, "r");
-        fs.readSync(fd, buffer, 0, buffer.length, startByte);
-        fs.closeSync(fd);
-        
-        startByte = currentSize;
-        
-        const text = buffer.toString("utf8");
-        const lines = text.split(/\r?\n/).filter(Boolean);
-        
-        for (const line of lines) {
-          try {
-            const step = JSON.parse(line);
-            if (step.source === "MODEL" && step.type === "PLANNER_RESPONSE" && step.status === "DONE") {
-              clearTimeout(timeout);
-              watcher.close();
-              console.log(`[BROKER] Found Antigravity response: "${step.content}"`);
-              resolve(step.content);
-              return;
-            }
-          } catch (e) {}
-        }
-      }
-    });
+    // Setup fallback polling
+    fallbackInterval = setInterval(checkFile, 1000);
   });
 }
 
@@ -387,7 +515,7 @@ async function pollAgyTranscript(conversationId, startByte = 0) {
 async function sendCamResponse(targetAgent, messageText) {
   const config = getCamConfig();
   const token = getCamToken();
-  const url = `http://localhost:${config.port}/send`;
+  const url = `http://127.0.0.1:${config.port}/send`;
 
   console.log(`[CAM API] Sending reply back to ${targetAgent}...`);
   const response = await fetch(url, {
@@ -423,8 +551,8 @@ async function processMessage(msg) {
   console.log(`-----------------------------`);
 
   try {
-    const mappings = loadMappings();
-    let conversationId = mappings[msg.sourceAgent];
+    const mappingsObj = loadMappings();
+    let conversationId = mappingsObj.conversations[msg.sourceAgent];
     let startByte = 0;
 
     if (conversationId) {
@@ -438,8 +566,8 @@ async function processMessage(msg) {
       const result = await runAgyCommand(["new-conversation", msg.body]);
       conversationId = result.response.newConversation.conversationId;
       console.log(`[BROKER] Created conversation: ${conversationId}`);
-      mappings[msg.sourceAgent] = conversationId;
-      saveMappings(mappings);
+      mappingsObj.conversations[msg.sourceAgent] = conversationId;
+      saveMappings(mappingsObj);
     }
 
     const reply = await pollAgyTranscript(conversationId, startByte);
@@ -454,12 +582,13 @@ async function processMessage(msg) {
 
 // Main polling function natively calling /agents/read
 async function checkInbox() {
-  if (isProcessing) return;
+  if (isChecking || isProcessing) return;
+  isChecking = true;
 
   try {
     const config = getCamConfig();
     const token = getCamToken();
-    const url = `http://localhost:${config.port}/agents/read?name=${AGENT_NAME}`;
+    const url = `http://127.0.0.1:${config.port}/agents/read?name=${AGENT_NAME}`;
 
     const res = await fetch(url, {
       headers: { "Authorization": `Bearer ${token}` }
@@ -474,20 +603,35 @@ async function checkInbox() {
     if (!data.agent || !data.agent.lastDelivery) return;
 
     const msg = data.agent.lastDelivery;
+    const mappingsObj = loadMappings();
+
+    if (lastProcessedMessageId === null) {
+      lastProcessedMessageId = mappingsObj.lastProcessedMessageId;
+    }
 
     if (lastProcessedMessageId === null) {
       lastProcessedMessageId = msg.messageId;
+      mappingsObj.lastProcessedMessageId = msg.messageId;
+      saveMappings(mappingsObj);
       console.log(`[BROKER] Initialized baseline messageId to: ${msg.messageId}`);
       return;
     }
 
     if (msg.messageId !== lastProcessedMessageId) {
-      lastProcessedMessageId = msg.messageId;
+      console.log(`[BROKER] New message detected: ${msg.messageId}`);
       await processMessage(msg);
+      
+      // Persist the message ID once processed/attempted
+      lastProcessedMessageId = msg.messageId;
+      const updatedMappings = loadMappings();
+      updatedMappings.lastProcessedMessageId = msg.messageId;
+      saveMappings(updatedMappings);
     }
 
   } catch (e) {
     console.error("[BROKER] Fetch error:", e.message);
+  } finally {
+    isChecking = false;
   }
 }
 
